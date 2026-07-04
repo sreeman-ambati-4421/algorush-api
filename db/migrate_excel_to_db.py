@@ -158,15 +158,16 @@ def migrate_one(db, account_id, strategy, client_name, xlsx_path, initial_capita
     print(f"    summary_history: {len(summary_rows)} row(s)")
 
     exits = _read_exited_stocks(xlsx_path)
-    by_type = {}
-    for e in exits:
-        by_type.setdefault(e["Exit_Type"], []).append(e)
-    for exit_type, rows in by_type.items():
-        stocks_deleted = OrderedDict()
-        for r in rows:
-            entry_date = r["Entry_Date"] if isinstance(r["Entry_Date"], str) else r["Entry_Date"].strftime("%d-%m-%Y")
-            exit_date = r["Exit_Date"] if isinstance(r["Exit_Date"], str) else r["Exit_Date"].strftime("%d-%m-%Y")
-            stocks_deleted[f"{r['ticker']}__{exit_date}"] = {
+    # write_exit_stocks() takes a dict keyed by ticker, so batching more than
+    # one row per call silently drops earlier rows whenever the same ticker
+    # was exited more than once under the same exit_type (a real occurrence
+    # in multi-year history). Write one row per call instead -- each call's
+    # dict has exactly one entry, so no ticker can collide with another.
+    for r in exits:
+        entry_date = r["Entry_Date"] if isinstance(r["Entry_Date"], str) else r["Entry_Date"].strftime("%d-%m-%Y")
+        exit_date = r["Exit_Date"] if isinstance(r["Exit_Date"], str) else r["Exit_Date"].strftime("%d-%m-%Y")
+        db.write_exit_stocks(account_id, strategy, {
+            r["ticker"]: {
                 "Entry_Date": entry_date, "Exit_Date": exit_date,
                 "Holding_Days": r["Holding_Days"], "No_Of_Shares": r["No_Of_Shares"],
                 "Buy_Price": r["Buy_Price"], "Buy_Amount": r["Buy_Amount"],
@@ -174,11 +175,7 @@ def migrate_one(db, account_id, strategy, client_name, xlsx_path, initial_capita
                 "100_Days_EMA": r["100_Days_EMA"], "Profit_Loss": r["Profit_Loss"],
                 "Percentage": r["Percentage"],
             }
-        # write_exit_stocks needs the real ticker as the dict key, not our dedupe key
-        real_keyed = OrderedDict()
-        for (k, v), r in zip(stocks_deleted.items(), rows):
-            real_keyed[r["ticker"]] = v
-        db.write_exit_stocks(account_id, strategy, real_keyed, exit_type)
+        }, r["Exit_Type"])
     print(f"    exited_stocks: {len(exits)} row(s)")
 
     portfolio = _read_current_portfolio(xlsx_path)
