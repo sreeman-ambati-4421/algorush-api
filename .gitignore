@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+Algo/utils/creds.py
+tokens/
+Stock_History_Files/
+*/Logs_EMA/
+*/Logs_ETF/
+*.log
+.env

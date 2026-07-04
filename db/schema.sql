@@ -1,0 +1,132 @@
+-- AlgoRush schema (Neon Postgres)
+-- Replaces the per-account Excel workbooks used by Algo/momentum/momentum_final.py
+-- and Algo/momentum_etf/momentum_etf.py. One row per unit of data instead of one
+-- sheet per account.
+
+CREATE TYPE strategy_name AS ENUM ('momentum', 'momentum_etf');
+CREATE TYPE trade_side AS ENUM ('BUY', 'SELL');
+CREATE TYPE trade_status AS ENUM ('PENDING', 'COMPLETE', 'REJECTED');
+
+-- One row per broker account. Secrets (api_key/access_token/etc) stay in the
+-- existing Algo/utils/creds.py on the bot host -- never stored here.
+CREATE TABLE accounts (
+    userid       TEXT PRIMARY KEY,
+    client_name  TEXT NOT NULL,
+    trade_on     BOOLEAN NOT NULL DEFAULT TRUE,
+    is_base      BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Replaces settings.json (which never actually existed on disk -- this is the
+-- first real, durable home for these fields).
+CREATE TABLE strategy_settings (
+    account_id           TEXT NOT NULL REFERENCES accounts(userid),
+    strategy             strategy_name NOT NULL,
+    reset_and_rebalance  BOOLEAN NOT NULL DEFAULT FALSE,
+    rebalance_today       BOOLEAN NOT NULL DEFAULT FALSE,
+    initial_capital       NUMERIC NOT NULL DEFAULT 0,
+    sip_amount            NUMERIC NOT NULL DEFAULT 0,
+    additional_capital    NUMERIC NOT NULL DEFAULT 0,
+    rebalance_counter     INTEGER NOT NULL DEFAULT 5,
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (account_id, strategy)
+);
+
+-- Replaces the metadata row (row 2, columns A-D) of the Current_Portfolio sheet.
+CREATE TABLE portfolio_meta (
+    account_id         TEXT NOT NULL REFERENCES accounts(userid),
+    strategy           strategy_name NOT NULL,
+    executed_date      DATE NOT NULL,
+    cash_remaining     NUMERIC NOT NULL DEFAULT 0,
+    rebalance_counter  INTEGER NOT NULL DEFAULT 5,
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (account_id, strategy)
+);
+
+-- Replaces the per-ticker rows of the Current_Portfolio sheet (open positions).
+CREATE TABLE portfolio_holdings (
+    id               BIGSERIAL PRIMARY KEY,
+    account_id       TEXT NOT NULL REFERENCES accounts(userid),
+    strategy         strategy_name NOT NULL,
+    ticker           TEXT NOT NULL,
+    entry_date       DATE NOT NULL,
+    holding_days     INTEGER NOT NULL DEFAULT 1,
+    no_of_shares     NUMERIC NOT NULL,
+    buy_price        NUMERIC NOT NULL,
+    buy_amount       NUMERIC NOT NULL,
+    current_price    NUMERIC NOT NULL DEFAULT 0,
+    current_amount   NUMERIC NOT NULL DEFAULT 0,
+    ema_100          NUMERIC NOT NULL DEFAULT 0,
+    profit_loss      NUMERIC NOT NULL DEFAULT 0,
+    percentage       NUMERIC NOT NULL DEFAULT 0,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (account_id, strategy, ticker)
+);
+
+-- Replaces the Current_Summary sheet -- one append-only row per trading day,
+-- drives the equity-curve / drawdown charts.
+CREATE TABLE summary_history (
+    id                        BIGSERIAL PRIMARY KEY,
+    account_id                TEXT NOT NULL REFERENCES accounts(userid),
+    strategy                  strategy_name NOT NULL,
+    date                      DATE NOT NULL,
+    no_of_holdings            INTEGER NOT NULL DEFAULT 0,
+    invested_capital          NUMERIC NOT NULL DEFAULT 0,
+    holdings_value            NUMERIC NOT NULL DEFAULT 0,
+    cash_remaining            NUMERIC NOT NULL DEFAULT 0,
+    total_value_holdings      NUMERIC NOT NULL DEFAULT 0,
+    holding_values_diff       NUMERIC,
+    total_profit_loss         NUMERIC NOT NULL DEFAULT 0,
+    sip_amount_added          NUMERIC NOT NULL DEFAULT 0,
+    additional_capital_added  NUMERIC NOT NULL DEFAULT 0,
+    created_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (account_id, strategy, date)
+);
+
+-- Replaces the Exited_Stocks sheet.
+CREATE TABLE exited_stocks (
+    id             BIGSERIAL PRIMARY KEY,
+    account_id     TEXT NOT NULL REFERENCES accounts(userid),
+    strategy       strategy_name NOT NULL,
+    ticker         TEXT NOT NULL,
+    entry_date     DATE NOT NULL,
+    exit_date      DATE NOT NULL,
+    holding_days   INTEGER NOT NULL,
+    no_of_shares   NUMERIC NOT NULL,
+    buy_price      NUMERIC NOT NULL,
+    buy_amount     NUMERIC NOT NULL,
+    sell_price     NUMERIC NOT NULL,
+    sell_amount    NUMERIC NOT NULL,
+    ema_100        NUMERIC NOT NULL DEFAULT 0,
+    profit_loss    NUMERIC NOT NULL DEFAULT 0,
+    percentage     NUMERIC NOT NULL DEFAULT 0,
+    exit_type      TEXT NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Audit log of every manual buy/sell placed from the dashboard.
+CREATE TABLE trade_orders (
+    id             BIGSERIAL PRIMARY KEY,
+    account_id     TEXT NOT NULL REFERENCES accounts(userid),
+    strategy       strategy_name NOT NULL,
+    ticker         TEXT NOT NULL,
+    side           trade_side NOT NULL,
+    quantity       NUMERIC NOT NULL,
+    order_type     TEXT NOT NULL DEFAULT 'MKT',
+    limit_price    NUMERIC,
+    status         trade_status NOT NULL DEFAULT 'PENDING',
+    kite_order_id  TEXT,
+    average_price  NUMERIC,
+    status_message TEXT,
+    requested_by   TEXT NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at   TIMESTAMPTZ
+);
+
+CREATE INDEX idx_summary_history_lookup ON summary_history (account_id, strategy, date);
+CREATE INDEX idx_exited_stocks_lookup ON exited_stocks (account_id, strategy, exit_date);
+CREATE INDEX idx_trade_orders_lookup ON trade_orders (account_id, strategy, created_at);
+
+-- NextAuth tables are created separately by its own adapter migration
+-- (see web/ -- @auth/pg-adapter or @auth/drizzle-adapter) in a dedicated
+-- schema/table set so they never collide with the tables above.

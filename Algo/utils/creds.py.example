@@ -1,0 +1,26 @@
+"""
+Copy this file to creds.py (same directory) and fill in real values.
+creds.py itself is gitignored -- it holds live broker credentials and
+Telegram bot tokens and must never be committed.
+"""
+
+ACCOUNTS = {
+    "ZU9940": {
+        "client_name": "PRAMOD_Z",
+        "api_key": "",
+        "api_secret": "",
+        "access_token": "",       # populated daily by Algo/modules/token_generator.py
+        "password": "",
+        "totp_key": "",
+        "source_ip": "",          # broker-allow-listed source IP, or "" to skip binding locally
+        "TradeOn": True,
+        "Base": True,             # exactly one account should be flagged Base
+    },
+    # "AB1234": { ... additional accounts ... },
+}
+
+telegram = {
+    "is_debug_mode": False,
+    "eqt_token": {"bot_id": "", "chat_id": ""},
+    "tech_token": {"bot_id": "", "chat_id": ""},
+}
