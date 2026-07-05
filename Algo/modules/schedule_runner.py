@@ -37,12 +37,29 @@ _WEEKDAY_FIELDS = ("monday", "tuesday", "wednesday", "thursday", "friday", "satu
 IST = ZoneInfo("Asia/Kolkata")
 
 
-def _already_ran_today(account_id, strategy):
+def _already_attempted_today(account_id, strategy, schedule):
+    """True if today's schedule shouldn't launch another attempt:
+    - a SUCCESS already happened today, or
+    - the most recent run today FAILED and the schedule hasn't been edited
+      since (no retry signal). Saving the schedule form -- even to the same
+      values -- bumps job_schedule.updated_at, which is read as "try again"."""
     runs = get_recent_job_runs(account_id, strategy, limit=1)
     if not runs:
         return False
-    started = datetime.fromisoformat(runs[0]["started_at"]).astimezone(IST).date()
-    return started == datetime.now(IST).date()
+
+    last_run = runs[0]
+    started_at = datetime.fromisoformat(last_run["started_at"]).astimezone(IST)
+    if started_at.date() != datetime.now(IST).date():
+        return False  # last run wasn't today
+
+    if last_run["status"] == "SUCCESS":
+        return True
+
+    if not schedule.get("updated_at"):
+        return True  # no schedule row to compare against -- don't auto-retry
+
+    updated_at = datetime.fromisoformat(schedule["updated_at"]).astimezone(IST)
+    return updated_at <= started_at
 
 
 def _is_due(schedule):
@@ -73,7 +90,7 @@ def _extract_summary(returncode, stdout, stderr):
 
 def run_if_due(account_id, strategy):
     schedule = get_job_schedule(account_id, strategy)
-    if not _is_due(schedule) or _already_ran_today(account_id, strategy):
+    if not _is_due(schedule) or _already_attempted_today(account_id, strategy, schedule):
         return
 
     module = STRATEGY_MODULE[strategy]

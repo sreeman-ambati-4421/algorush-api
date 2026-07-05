@@ -541,7 +541,12 @@ _DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "su
 
 def get_job_schedule(account_id, strategy):
     """Returns the dashboard-editable schedule row, or sane defaults
-    (09:15, enabled, weekdays only) if none has been saved yet."""
+    (09:15, enabled, weekdays only) if none has been saved yet.
+
+    updated_at lets schedule_runner.py tell "user edited the schedule after
+    today's failed run" (retry allowed) apart from "nothing's changed since
+    it failed" (don't auto-retry) -- None when no row exists yet, since
+    there's nothing to compare a failed run's timestamp against."""
     session = get_session()
     try:
         row = session.get(JobSchedule, (account_id, strategy))
@@ -549,11 +554,13 @@ def get_job_schedule(account_id, strategy):
             return {
                 "run_time": "09:15",
                 "enabled": True,
+                "updated_at": None,
                 **{d: d not in ("saturday", "sunday") for d in _DAYS},
             }
         return {
             "run_time": row.run_time.strftime("%H:%M"),
             "enabled": row.enabled,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             **{d: getattr(row, d) for d in _DAYS},
         }
     finally:
