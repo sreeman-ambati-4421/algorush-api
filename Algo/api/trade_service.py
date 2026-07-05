@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from kiteconnect import KiteConnect
 
 from Algo.logger import logger, init_logging
-from Algo.utils.algoutils import getInstrumentsList, gettoken, loadAccessCodes
+from Algo.utils.algoutils import getInstrumentsList, gettoken, loadAccessCodes, sendeqtAlert
 from Algo.utils.creds import ACCOUNTS as cred_account_settings
 from Algo.utils.src_bind import mount_source_ip
 from Algo.utils.db import (
@@ -40,6 +40,14 @@ if not logger.handlers:
     init_logging("trade_service.log", log_level="INFO")
 
 app = FastAPI(title="AlgoRush Trade API")
+
+
+@app.on_event("startup")
+def notify_startup():
+    # Confirms the API actually came up and is serving, not just that
+    # systemd launched the process -- useful after a VM reboot to know the
+    # whole boot sequence (token, API, scheduler) worked.
+    sendeqtAlert("AlgoRush trade_service started")
 
 _kite_sessions: dict[str, KiteConnect] = {}
 _instruments_cache: dict[str, list] = {}
