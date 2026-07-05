@@ -18,7 +18,8 @@ run_time hasn't passed yet.
 
 import subprocess
 import sys
-from datetime import datetime, date as date_cls
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from Algo.logger import logger, init_logging
 from Algo.utils.creds import ACCOUNTS
@@ -30,23 +31,28 @@ STRATEGY_MODULE = {
 }
 
 _WEEKDAY_FIELDS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+# run_time in job_schedule is always meant as IST (NSE market hours) --
+# compare against IST explicitly rather than the host's system timezone, so
+# this keeps working correctly no matter what timezone the bot host is set to.
+IST = ZoneInfo("Asia/Kolkata")
 
 
 def _already_ran_today(account_id, strategy):
     runs = get_recent_job_runs(account_id, strategy, limit=1)
     if not runs:
         return False
-    started = datetime.fromisoformat(runs[0]["started_at"]).date()
-    return started == date_cls.today()
+    started = datetime.fromisoformat(runs[0]["started_at"]).astimezone(IST).date()
+    return started == datetime.now(IST).date()
 
 
 def _is_due(schedule):
+    now_ist = datetime.now(IST)
     if not schedule["enabled"]:
         return False
-    if not schedule[_WEEKDAY_FIELDS[datetime.today().weekday()]]:
+    if not schedule[_WEEKDAY_FIELDS[now_ist.weekday()]]:
         return False
     run_time = datetime.strptime(schedule["run_time"], "%H:%M").time()
-    return datetime.now().time() >= run_time
+    return now_ist.time() >= run_time
 
 
 def run_if_due(account_id, strategy):
