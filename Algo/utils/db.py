@@ -17,7 +17,7 @@ from collections import OrderedDict
 from datetime import datetime, date as date_cls
 
 from sqlalchemy import (
-    create_engine, Column, Text, Boolean, Numeric, Integer, Date, DateTime,
+    create_engine, Column, Text, Boolean, Numeric, Integer, Date, DateTime, Time,
     ForeignKey, UniqueConstraint, Enum as SAEnum, func, select, delete,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -52,6 +52,7 @@ def get_session():
 strategy_enum = SAEnum("momentum", "momentum_etf", name="strategy_name", create_type=False)
 trade_side_enum = SAEnum("BUY", "SELL", name="trade_side", create_type=False)
 trade_status_enum = SAEnum("PENDING", "COMPLETE", "REJECTED", name="trade_status", create_type=False)
+job_run_status_enum = SAEnum("RUNNING", "SUCCESS", "FAILED", "SKIPPED", name="job_run_status", create_type=False)
 
 
 class Account(Base):
@@ -163,6 +164,34 @@ class TradeOrder(Base):
     requested_by = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class JobSchedule(Base):
+    __tablename__ = "job_schedule"
+    account_id = Column(Text, ForeignKey("accounts.userid"), primary_key=True)
+    strategy = Column(strategy_enum, primary_key=True)
+    run_time = Column(Time, nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    monday = Column(Boolean, nullable=False, default=True)
+    tuesday = Column(Boolean, nullable=False, default=True)
+    wednesday = Column(Boolean, nullable=False, default=True)
+    thursday = Column(Boolean, nullable=False, default=True)
+    friday = Column(Boolean, nullable=False, default=True)
+    saturday = Column(Boolean, nullable=False, default=False)
+    sunday = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class JobRun(Base):
+    __tablename__ = "job_runs"
+    id = Column(Integer, primary_key=True)
+    account_id = Column(Text, ForeignKey("accounts.userid"), nullable=False)
+    strategy = Column(strategy_enum, nullable=False)
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    status = Column(job_run_status_enum, nullable=False, default="RUNNING")
+    message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 def _to_date(date_str):
@@ -503,5 +532,105 @@ def add_manual_funds(account_id, strategy, amount):
 
         session.commit()
         return float(meta.cash_remaining), added_to_summary
+    finally:
+        session.close()
+
+
+_DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def get_job_schedule(account_id, strategy):
+    """Returns the dashboard-editable schedule row, or sane defaults
+    (09:15, enabled, weekdays only) if none has been saved yet."""
+    session = get_session()
+    try:
+        row = session.get(JobSchedule, (account_id, strategy))
+        if row is None:
+            return {
+                "run_time": "09:15",
+                "enabled": True,
+                **{d: d not in ("saturday", "sunday") for d in _DAYS},
+            }
+        return {
+            "run_time": row.run_time.strftime("%H:%M"),
+            "enabled": row.enabled,
+            **{d: getattr(row, d) for d in _DAYS},
+        }
+    finally:
+        session.close()
+
+
+def save_job_schedule(account_id, strategy, run_time, enabled, days):
+    """run_time: 'HH:MM' string. days: dict with the 7 lowercase weekday
+    keys -> bool (missing keys default to True, matching the column
+    defaults)."""
+    session = get_session()
+    try:
+        values = dict(
+            account_id=account_id,
+            strategy=strategy,
+            run_time=datetime.strptime(run_time, "%H:%M").time(),
+            enabled=enabled,
+            **{d: days.get(d, True) for d in _DAYS},
+        )
+        stmt = pg_insert(JobSchedule).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["account_id", "strategy"],
+            set_={**{k: getattr(stmt.excluded, k) for k in values if k not in ("account_id", "strategy")},
+                  "updated_at": func.now()},
+        )
+        session.execute(stmt)
+        session.commit()
+    finally:
+        session.close()
+
+
+def get_recent_job_runs(account_id, strategy, limit=5):
+    session = get_session()
+    try:
+        rows = session.scalars(
+            select(JobRun)
+            .where(JobRun.account_id == account_id, JobRun.strategy == strategy)
+            .order_by(JobRun.started_at.desc())
+            .limit(limit)
+        ).all()
+        return [
+            {
+                "id": r.id,
+                "started_at": r.started_at.isoformat(),
+                "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+                "status": r.status,
+                "message": r.message,
+            }
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
+def record_job_run_start(account_id, strategy):
+    """Called by schedule_runner.py right before launching the bot
+    subprocess. Returns the new job_runs.id to pass to record_job_run_complete."""
+    session = get_session()
+    try:
+        run = JobRun(account_id=account_id, strategy=strategy, status="RUNNING")
+        session.add(run)
+        session.commit()
+        return run.id
+    finally:
+        session.close()
+
+
+def record_job_run_complete(run_id, status, message=None):
+    """status: 'SUCCESS' | 'FAILED'. message: e.g. captured subprocess
+    output/error, truncated by the caller if very long."""
+    session = get_session()
+    try:
+        run = session.get(JobRun, run_id)
+        if run is not None:
+            run.status = status
+            run.message = message
+            run.completed_at = datetime.utcnow()
+            session.commit()
     finally:
         session.close()

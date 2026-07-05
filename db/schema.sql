@@ -127,6 +127,46 @@ CREATE INDEX idx_summary_history_lookup ON summary_history (account_id, strategy
 CREATE INDEX idx_exited_stocks_lookup ON exited_stocks (account_id, strategy, exit_date);
 CREATE INDEX idx_trade_orders_lookup ON trade_orders (account_id, strategy, created_at);
 
+-- Dashboard-editable run time/day for the daily bot. The actual OS-level
+-- trigger (cron/Task Scheduler on the bot host) fires frequently and cheaply
+-- (e.g. every 5 min in the morning window) and only actually launches the
+-- bot once current time crosses run_time on an enabled day -- see
+-- Algo/modules/schedule_runner.py. Editing this table is all the dashboard
+-- needs to do; no server/crontab access required from the web app.
+CREATE TABLE job_schedule (
+    account_id   TEXT NOT NULL REFERENCES accounts(userid),
+    strategy     strategy_name NOT NULL,
+    run_time     TIME NOT NULL DEFAULT '09:15:00',
+    enabled      BOOLEAN NOT NULL DEFAULT TRUE,
+    monday       BOOLEAN NOT NULL DEFAULT TRUE,
+    tuesday      BOOLEAN NOT NULL DEFAULT TRUE,
+    wednesday    BOOLEAN NOT NULL DEFAULT TRUE,
+    thursday     BOOLEAN NOT NULL DEFAULT TRUE,
+    friday       BOOLEAN NOT NULL DEFAULT TRUE,
+    saturday     BOOLEAN NOT NULL DEFAULT FALSE,
+    sunday       BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (account_id, strategy)
+);
+
+-- One row per schedule_runner-triggered bot run, for the dashboard's
+-- "latest runs" panel. Written by schedule_runner.py, which wraps the bot
+-- subprocess without touching momentum_final.py's own trading logic.
+CREATE TYPE job_run_status AS ENUM ('RUNNING', 'SUCCESS', 'FAILED', 'SKIPPED');
+
+CREATE TABLE job_runs (
+    id           BIGSERIAL PRIMARY KEY,
+    account_id   TEXT NOT NULL REFERENCES accounts(userid),
+    strategy     strategy_name NOT NULL,
+    started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ,
+    status       job_run_status NOT NULL DEFAULT 'RUNNING',
+    message      TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_job_runs_lookup ON job_runs (account_id, strategy, started_at DESC);
+
 -- NextAuth tables are created separately by its own adapter migration
 -- (see web/ -- @auth/pg-adapter or @auth/drizzle-adapter) in a dedicated
 -- schema/table set so they never collide with the tables above.

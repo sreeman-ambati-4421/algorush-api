@@ -32,6 +32,7 @@ from Algo.utils.creds import ACCOUNTS as cred_account_settings
 from Algo.utils.src_bind import mount_source_ip
 from Algo.utils.db import (
     read_current_portfolio, write_current_portfolio, get_session, TradeOrder, add_manual_funds,
+    get_job_schedule, save_job_schedule, get_recent_job_runs,
 )
 from Algo.api.scorecard import compute_scorecard
 
@@ -176,6 +177,57 @@ def add_funds(req: AddFundsRequest, authorization: str | None = Header(default=N
         f"-> cash_remaining={cash_remaining} by={req.requested_by}"
     )
     return {"cash_remaining": cash_remaining, "additional_capital_added_today": added_to_summary}
+
+
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+class ScheduleRequest(BaseModel):
+    account_id: str
+    strategy: str  # 'momentum' | 'momentum_etf'
+    run_time: str  # 'HH:MM'
+    enabled: bool
+    monday: bool = True
+    tuesday: bool = True
+    wednesday: bool = True
+    thursday: bool = True
+    friday: bool = True
+    saturday: bool = False
+    sunday: bool = False
+
+
+@app.get("/schedule/{account_id}/{strategy}")
+def get_schedule(account_id: str, strategy: str, authorization: str | None = Header(default=None)):
+    _check_auth(authorization)
+    if strategy not in STRATEGY_DEFAULT_CAPITAL:
+        raise HTTPException(400, f"Unknown strategy: {strategy}")
+    return get_job_schedule(account_id, strategy)
+
+
+@app.post("/schedule")
+def update_schedule(req: ScheduleRequest, authorization: str | None = Header(default=None)):
+    _check_auth(authorization)
+    if req.strategy not in STRATEGY_DEFAULT_CAPITAL:
+        raise HTTPException(400, f"Unknown strategy: {req.strategy}")
+    try:
+        datetime.strptime(req.run_time, "%H:%M")
+    except ValueError:
+        raise HTTPException(400, "run_time must be 'HH:MM'")
+
+    days = {d: getattr(req, d) for d in _WEEKDAYS}
+    save_job_schedule(req.account_id, req.strategy, req.run_time, req.enabled, days)
+    logger.info(
+        f"Schedule updated [{req.account_id}/{req.strategy}] run_time={req.run_time} enabled={req.enabled}"
+    )
+    return get_job_schedule(req.account_id, req.strategy)
+
+
+@app.get("/runs/{account_id}/{strategy}")
+def list_runs(account_id: str, strategy: str, limit: int = 5, authorization: str | None = Header(default=None)):
+    _check_auth(authorization)
+    if strategy not in STRATEGY_DEFAULT_CAPITAL:
+        raise HTTPException(400, f"Unknown strategy: {strategy}")
+    return get_recent_job_runs(account_id, strategy, limit)
 
 
 @app.post("/trade")
