@@ -55,6 +55,22 @@ def _is_due(schedule):
     return now_ist.time() >= run_time
 
 
+def _extract_summary(returncode, stdout, stderr):
+    """One concise line for the dashboard instead of the whole raw
+    stdout+stderr dump. On failure, the last non-empty stderr line is
+    almost always the actual "ExceptionType: message" line a Python
+    traceback ends with -- e.g. "Exception: MARKETS ARE NOT OPEN. SCRIPT
+    WILL NOT BE EXECUTED !". Full output is still logged in full via
+    run_if_due for when more detail is actually needed."""
+    if returncode == 0:
+        return "Completed successfully"
+    for text in (stderr, stdout):
+        lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+        if lines:
+            return lines[-1][:500]
+    return f"Process exited with code {returncode}, no output captured"
+
+
 def run_if_due(account_id, strategy):
     schedule = get_job_schedule(account_id, strategy)
     if not _is_due(schedule) or _already_ran_today(account_id, strategy):
@@ -68,10 +84,14 @@ def run_if_due(account_id, strategy):
             [sys.executable, "-m", module, "--userid", account_id],
             capture_output=True, text=True, timeout=3600,
         )
-        output = (result.stdout + "\n" + result.stderr).strip()[-4000:]
         status = "SUCCESS" if result.returncode == 0 else "FAILED"
-        record_job_run_complete(run_id, status, output or None)
-        logger.info(f"{account_id}/{strategy} finished: {status} (exit {result.returncode})")
+        summary = _extract_summary(result.returncode, result.stdout, result.stderr)
+        record_job_run_complete(run_id, status, summary)
+        if status == "FAILED":
+            # Full raw output only goes to the log file/journal, never the
+            # dashboard -- kept for when the one-line summary isn't enough.
+            logger.error(f"{account_id}/{strategy} full output:\n{result.stdout}\n{result.stderr}")
+        logger.info(f"{account_id}/{strategy} finished: {status} (exit {result.returncode}): {summary}")
     except Exception as e:
         record_job_run_complete(run_id, "FAILED", str(e))
         logger.error(f"{account_id}/{strategy} run failed to launch: {e}")
