@@ -31,7 +31,7 @@ from Algo.utils.algoutils import getInstrumentsList, gettoken, loadAccessCodes
 from Algo.utils.creds import ACCOUNTS as cred_account_settings
 from Algo.utils.src_bind import mount_source_ip
 from Algo.utils.db import (
-    read_current_portfolio, write_current_portfolio, get_session, TradeOrder,
+    read_current_portfolio, write_current_portfolio, get_session, TradeOrder, add_manual_funds,
 )
 from Algo.api.scorecard import compute_scorecard
 
@@ -146,9 +146,36 @@ class TradeRequest(BaseModel):
     dry_run: bool = False
 
 
+class AddFundsRequest(BaseModel):
+    account_id: str
+    strategy: str  # 'momentum' | 'momentum_etf'
+    amount: float
+    requested_by: str
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/add-funds")
+def add_funds(req: AddFundsRequest, authorization: str | None = Header(default=None)):
+    _check_auth(authorization)
+    if req.strategy not in STRATEGY_DEFAULT_CAPITAL:
+        raise HTTPException(400, f"Unknown strategy: {req.strategy}")
+    if req.amount <= 0:
+        raise HTTPException(400, "amount must be positive")
+
+    try:
+        cash_remaining, added_to_summary = add_manual_funds(req.account_id, req.strategy, req.amount)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+    logger.info(
+        f"Manual funds added [{req.account_id}/{req.strategy}] +{req.amount} "
+        f"-> cash_remaining={cash_remaining} by={req.requested_by}"
+    )
+    return {"cash_remaining": cash_remaining, "additional_capital_added_today": added_to_summary}
 
 
 @app.post("/trade")

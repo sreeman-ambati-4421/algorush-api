@@ -462,3 +462,46 @@ def ensure_account(account_id, client_name, trade_on=True, is_base=False):
         session.commit()
     finally:
         session.close()
+
+
+def add_manual_funds(account_id, strategy, amount):
+    """Records a manual capital top-up (e.g. topping up the broker account
+    after an insufficient-funds order failure, then placing the buy by hand).
+
+    Bumps portfolio_meta.cash_remaining immediately so the next manual trade
+    draws against the right balance. Separately, best-effort adds the amount
+    to TODAY's summary_history.additional_capital_added -- the same field the
+    bot's own SIP/lump-sum flow writes to -- so compute_scorecard's XIRR
+    treats it as injected capital rather than return. Only updates an
+    existing row for today; never creates one (that stays the bot's job, and
+    a phantom row would corrupt the equity-curve chart until the bot next
+    runs and overwrites it).
+
+    Returns (new_cash_remaining, added_to_summary_today: bool).
+    """
+    session = get_session()
+    try:
+        meta = session.get(PortfolioMeta, (account_id, strategy))
+        if meta is None:
+            raise ValueError(
+                "No portfolio_meta row for this account/strategy yet -- run the bot once first"
+            )
+        meta.cash_remaining = float(meta.cash_remaining) + amount
+
+        today = date_cls.today()
+        summary_row = session.scalars(
+            select(SummaryHistory).where(
+                SummaryHistory.account_id == account_id,
+                SummaryHistory.strategy == strategy,
+                SummaryHistory.date == today,
+            )
+        ).first()
+        added_to_summary = False
+        if summary_row is not None:
+            summary_row.additional_capital_added = float(summary_row.additional_capital_added or 0) + amount
+            added_to_summary = True
+
+        session.commit()
+        return float(meta.cash_remaining), added_to_summary
+    finally:
+        session.close()
