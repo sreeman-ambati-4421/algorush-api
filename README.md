@@ -46,20 +46,34 @@ later.
 
 ## Setup
 
-1. **Credentials**: `cp Algo/utils/creds.py.example Algo/utils/creds.py` and
-   fill in real values (`ACCOUNTS`, `telegram`). This file is gitignored.
+1. **Credentials file**: `cp Algo/utils/creds.py.example Algo/utils/creds.py`
+   and fill in the `telegram` block. This file is gitignored. `ACCOUNTS` is
+   no longer a hardcoded dict here -- broker credentials are encrypted and
+   stored in Postgres, loaded at import time (see step 5).
 2. **Install deps**: `pip install -r requirements.txt`
 3. **Database**: create a Neon Postgres project, apply the schema:
    ```
    psql "$DATABASE_URL" -f db/schema.sql
    ```
-4. **Backfill history** (optional, only if migrating from an existing
+4. **Encryption key**: generate one and set it as `CREDS_ENCRYPTION_KEY` in
+   the environment (bot host only -- never in AlgoRush-UI's hosting env):
+   ```
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+5. **Register each broker account** (api_key, api_secret, password, TOTP
+   secret, and the Google email that's allowed to view it on the dashboard):
+   ```
+   python db/register_account.py
+   ```
+   Safe to re-run for an existing account id -- upserts, useful for rotating
+   credentials later.
+6. **Backfill history** (optional, only if migrating from an existing
    EquityAlgo install with real `.xlsx` workbooks):
    ```
    export DATABASE_URL=postgresql://...
    python db/migrate_excel_to_db.py --xlsx-source-root /path/to/old/EquityAlgo
    ```
-5. **Daily tokens**: `python Algo/modules/token_generator.py --i <ACCOUNT>`
+7. **Daily tokens**: `python Algo/modules/token_generator.py --i <ACCOUNT>`
    (needs interactive TOTP login the first time per Kite's flow) -- run before
    market open, however you already schedule this.
 6. **Run the bots** (same invocation as before, just needs `DATABASE_URL` set

@@ -1,23 +1,25 @@
 """
-Copy this file to creds.py (same directory) and fill in real values.
-creds.py itself is gitignored -- it holds live broker credentials and
-Telegram bot tokens and must never be committed.
-"""
+Copy this file to creds.py (same directory). creds.py itself is gitignored.
 
-ACCOUNTS = {
-    "ZU9940": {
-        "client_name": "PRAMOD_Z",
-        "api_key": "",
-        "api_secret": "",
-        "access_token": "",       # populated daily by Algo/modules/token_generator.py
-        "password": "",
-        "totp_key": "",
-        "source_ip": "",          # broker-allow-listed source IP, or "" to skip binding locally
-        "TradeOn": True,
-        "Base": True,             # exactly one account should be flagged Base
-    },
-    # "AB1234": { ... additional accounts ... },
-}
+ACCOUNTS is no longer a hardcoded dict here -- broker credentials (api_key,
+api_secret, password, TOTP secret) are stored encrypted in Postgres
+(accounts + account_credentials tables) and decrypted at import time via
+Algo/utils/crypto.py. Register a new account or rotate an existing one's
+credentials with:
+
+    python db/register_account.py
+
+That script needs DATABASE_URL and CREDS_ENCRYPTION_KEY set in the
+environment. Generate a CREDS_ENCRYPTION_KEY once with:
+
+    python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+Only fill in the telegram block below -- it's the one thing that still lives
+in this local, gitignored file.
+"""
+from Algo.utils.db import load_account_credentials
+
+ACCOUNTS = load_account_credentials()
 
 telegram = {
     "is_debug_mode": False,

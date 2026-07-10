@@ -7,14 +7,38 @@ CREATE TYPE strategy_name AS ENUM ('momentum', 'momentum_etf');
 CREATE TYPE trade_side AS ENUM ('BUY', 'SELL');
 CREATE TYPE trade_status AS ENUM ('PENDING', 'COMPLETE', 'REJECTED');
 
--- One row per broker account. Secrets (api_key/access_token/etc) stay in the
--- existing Algo/utils/creds.py on the bot host -- never stored here.
+-- One row per broker account. google_email links the account to exactly one
+-- Google sign-in for the dashboard (1:1, enforced by UNIQUE) -- the UI gates
+-- login and per-account access off this column alone, it never touches
+-- account_credentials below. Broker secrets live in account_credentials,
+-- encrypted at rest; only the bot host (holding CREDS_ENCRYPTION_KEY) can
+-- decrypt them, via Algo/utils/db.py's load_account_credentials().
 CREATE TABLE accounts (
     userid       TEXT PRIMARY KEY,
     client_name  TEXT NOT NULL,
     trade_on     BOOLEAN NOT NULL DEFAULT TRUE,
     is_base      BOOLEAN NOT NULL DEFAULT FALSE,
+    google_email TEXT UNIQUE,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- At most one Base account at a time (register_account.py also enforces this
+-- interactively, but a DB-level guarantee catches any other write path too).
+CREATE UNIQUE INDEX accounts_one_base ON accounts (is_base) WHERE is_base;
+
+-- Encrypted broker credentials, one row per account. *_enc columns hold
+-- Fernet ciphertext (see Algo/utils/crypto.py) -- registered/rotated via
+-- db/register_account.py, never written from the web app. Deliberately a
+-- separate table from accounts so nothing in the UI (which only ever queries
+-- accounts) can accidentally select ciphertext.
+CREATE TABLE account_credentials (
+    account_id       TEXT PRIMARY KEY REFERENCES accounts(userid),
+    api_key_enc      TEXT NOT NULL,
+    api_secret_enc   TEXT NOT NULL,
+    password_enc     TEXT NOT NULL,
+    totp_secret_enc  TEXT NOT NULL,
+    source_ip        TEXT,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Replaces settings.json (which never actually existed on disk -- this is the
@@ -167,6 +191,6 @@ CREATE TABLE job_runs (
 
 CREATE INDEX idx_job_runs_lookup ON job_runs (account_id, strategy, started_at DESC);
 
--- NextAuth tables are created separately by its own adapter migration
--- (see web/ -- @auth/pg-adapter or @auth/drizzle-adapter) in a dedicated
--- schema/table set so they never collide with the tables above.
+-- The dashboard (AlgoRush-UI) uses NextAuth v4 with JWT sessions and no
+-- database adapter -- it needs no NextAuth-owned tables at all. Sign-in is
+-- gated purely off accounts.google_email (see lib/auth.ts).

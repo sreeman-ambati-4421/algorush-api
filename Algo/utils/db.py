@@ -16,6 +16,8 @@ import os
 from collections import OrderedDict
 from datetime import datetime, date as date_cls
 
+from Algo.logger import logger
+
 from sqlalchemy import (
     create_engine, Column, Text, Boolean, Numeric, Integer, Date, DateTime, Time,
     ForeignKey, UniqueConstraint, Enum as SAEnum, func, select, delete,
@@ -61,7 +63,19 @@ class Account(Base):
     client_name = Column(Text, nullable=False)
     trade_on = Column(Boolean, nullable=False, default=True)
     is_base = Column(Boolean, nullable=False, default=False)
+    google_email = Column(Text, unique=True, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AccountCredentials(Base):
+    __tablename__ = "account_credentials"
+    account_id = Column(Text, ForeignKey("accounts.userid"), primary_key=True)
+    api_key_enc = Column(Text, nullable=False)
+    api_secret_enc = Column(Text, nullable=False)
+    password_enc = Column(Text, nullable=False)
+    totp_secret_enc = Column(Text, nullable=False)
+    source_ip = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class StrategySettings(Base):
@@ -228,14 +242,14 @@ def read_current_portfolio(account_id, strategy):
             portfolio[h.ticker] = {
                 "Entry_Date": _to_str(h.entry_date),
                 "Holding_Days": h.holding_days,
-                "No_Of_Shares": h.no_of_shares,
-                "Buy_Price": h.buy_price,
-                "Buy_Amount": h.buy_amount,
-                "Current_Price": h.current_price,
-                "Current_Amount": h.current_amount,
-                "100_Days_EMA": h.ema_100,
-                "Profit_Loss": h.profit_loss,
-                "Percentage": h.percentage,
+                "No_Of_Shares": float(h.no_of_shares),
+                "Buy_Price": float(h.buy_price),
+                "Buy_Amount": float(h.buy_amount),
+                "Current_Price": float(h.current_price),
+                "Current_Amount": float(h.current_amount),
+                "100_Days_EMA": float(h.ema_100),
+                "Profit_Loss": float(h.profit_loss),
+                "Percentage": float(h.percentage),
             }
 
         return {
@@ -489,6 +503,53 @@ def ensure_account(account_id, client_name, trade_on=True, is_base=False):
         )
         session.execute(stmt)
         session.commit()
+    finally:
+        session.close()
+
+
+def load_account_credentials() -> dict:
+    """Replaces the old hardcoded Algo/utils/creds.py ACCOUNTS dict -- reads
+    accounts + account_credentials and decrypts secrets via Algo/utils/crypto,
+    reproducing the exact same dict shape every existing call site expects
+    (client_name, api_key, api_secret, access_token, password, totp_key,
+    source_ip, TradeOn, Base). access_token is always "" here -- it's loaded
+    separately, in-place, by Algo/utils/algoutils.py's loadAccessCodes() from
+    the per-account token file, unrelated to this table.
+
+    An account with no account_credentials row yet (registered but not run
+    through db/register_account.py) is skipped with a warning rather than
+    raising -- matches every call site's existing tolerance for accounts
+    absent from the dict (fetch_flag_accounts, trade_service._get_kite, etc),
+    and avoids one unregistered account taking down every account's bot run.
+    """
+    from Algo.utils import crypto
+
+    session = get_session()
+    try:
+        rows = session.execute(
+            select(Account, AccountCredentials)
+            .outerjoin(AccountCredentials, AccountCredentials.account_id == Account.userid)
+        ).all()
+        result = {}
+        for account, creds in rows:
+            if creds is None:
+                logger.warning(
+                    f"Account {account.userid} has no account_credentials row -- "
+                    f"skipping (run db/register_account.py)"
+                )
+                continue
+            result[account.userid] = {
+                "client_name": account.client_name,
+                "api_key": crypto.decrypt(creds.api_key_enc),
+                "api_secret": crypto.decrypt(creds.api_secret_enc),
+                "access_token": "",
+                "password": crypto.decrypt(creds.password_enc),
+                "totp_key": crypto.decrypt(creds.totp_secret_enc),
+                "source_ip": creds.source_ip or "",
+                "TradeOn": account.trade_on,
+                "Base": account.is_base,
+            }
+        return result
     finally:
         session.close()
 
